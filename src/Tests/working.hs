@@ -54,82 +54,67 @@ type SampleRate = Int
 
 
 check :: Monad m => Bool -> String -> m () -> m ()
-check b msg act =
-   if not b
-     then trace msg $ return ()
-     else act
+check b msg act = if not b
+                  then trace msg $ return ()
+                  else act
 
 unsafeAddChunkToBuffer :: (Storable a, Num a) =>
    SVST.Vector s a -> Int -> SV.Vector a -> ST s ()
 unsafeAddChunkToBuffer v start xs =
-   let go i j =
-          if j >= SV.length xs
-            then return ()
-            else
-              SVST.unsafeModify v i (SV.index xs j +) >>
-              go (i + 1) (j + 1)
-   in  check (start>=0)
-                ("start negative: " ++ show (start, SV.length xs)) $
-       check (start <= SVST.length v)
-                ("start too late: " ++ show (start, SV.length xs)) $
-       check (start+SV.length xs <= SVST.length v)
-                ("end too late: " ++ show (start, SV.length xs)) $
-       go start 0
+   let go i j = if j >= SV.length xs
+                then return ()
+                else SVST.unsafeModify v i (SV.index xs j +) >>
+                     go (i + 1) (j + 1)
+   in check (start>=0)
+               ("start negative: " ++ show (start, SV.length xs)) $
+      check (start <= SVST.length v)
+               ("start too late: " ++ show (start, SV.length xs)) $
+      check (start+SV.length xs <= SVST.length v)
+               ("end too late: " ++ show (start, SV.length xs)) $
+      go start 0
 
-arrange ::
-   (Storable a, Num a) =>
-   Size ->
-   [(Int, SV.Vector a)] ->
-   SV.Vector a
-arrange size evs =
-   SVST.runSTVector (do
-      v <- SVST.new (fromIntegral size) 0
-      mapM_ (uncurry $ unsafeAddChunkToBuffer v) evs
-      return v)
-
+arrange :: (Storable a, Num a) => Size ->
+                                  [(Int, SV.Vector a)] ->
+                                  SV.Vector a
+arrange size evs = SVST.runSTVector $ do
+  v <- SVST.new (fromIntegral size) 0
+  mapM_ (uncurry $ unsafeAddChunkToBuffer v) evs
+  return v
 
 data OscillatorState a = OscillatorState a a Int
-
 type State a = Map.Map Pitch (OscillatorState a)
-
 
 initialState :: State a
 initialState = Map.empty
 
-
-stopTone ::
-   Int ->
-   (Maybe (Int, OscillatorState a),
-    [(Int, Int, OscillatorState a)]) ->
-   [(Int, Int, OscillatorState a)]
+stopTone :: Int
+         -> (Maybe (Int, OscillatorState a),
+             [(Int, Int, OscillatorState a)])
+         -> [(Int, Int, OscillatorState a)]
 stopTone stopTime (mplaying, finished) =
-   case mplaying of
-      Just (startTime, osci) ->
-         (startTime, stopTime-startTime, osci) : finished
-      Nothing -> finished
+   case mplaying of Just (startTime, osci) ->
+                      (startTime, stopTime-startTime, osci) : finished
+                    Nothing -> finished
 
-renderTone ::
-   (Storable a, Floating a) =>
-   Int -> OscillatorState a ->
-   (SV.Vector a, OscillatorState a)
+renderTone :: (Storable a, Floating a)
+           => Int
+           -> OscillatorState a
+           -> (SV.Vector a, OscillatorState a)
 renderTone dur state@(OscillatorState amp freq phase) =
-   if dur<0
-     then
-       trace ("renderTone: negative duration " ++ show dur) $
+  if dur<0
+  then trace ("renderTone: negative duration " ++ show dur) $
        (SV.empty, state)
-     else
-       let gain = 0.9999
-       in  (SV.zipWith (\y k -> y * sin (2*pi*fromIntegral k * freq))
-               (SV.iterateN dur (gain*) amp)
-               (SV.iterateN dur (1+) phase),
-            OscillatorState (amp*gain^dur) freq (phase+dur))
+  else let gain = 0.9999
+       in (SV.zipWith (\y k -> y * sin (2*pi*fromIntegral k * freq))
+            (SV.iterateN dur (gain*) amp)
+            (SV.iterateN dur (1+) phase),
+          OscillatorState (amp*gain^dur) freq (phase+dur))
 
-processEvents ::
-   (Storable a, Floating a, Monad m) =>
-   Size ->
-   SampleRate ->
-   [(Time, VoiceMsg.T)] ->
-   MS.StateT (State a) m [(Int, SV.Vector a)]
+processEvents :: (Storable a, Floating a, Monad m) =>
+                 Size ->
+                 SampleRate ->
+                 [(Time, VoiceMsg.T)] ->
+                 MS.StateT (State a) m [(Int, SV.Vector a)]
 processEvents size rate input = do
    oscis0 <- MS.get
    let pendingOscis =
@@ -184,39 +169,34 @@ processEvents size rate input = do
    MS.put (Map.mapMaybe fst pendingOscis)
    return (concatMap snd $ Map.elems pendingOscis)
 
-run ::
-   (Storable a, Floating a, Monad m) =>
-   Size ->
-   SampleRate ->
-   [(Time, VoiceMsg.T)] ->
-   MS.StateT (State a) m (SV.Vector a)
-run size rate input =
+run :: (Storable a, Floating a, Monad m) =>
+       Size ->
+       SampleRate ->
+       [(Time, VoiceMsg.T)] ->
+       MS.StateT (State a) m (SV.Vector a)
+run size rate input = 
    liftM (arrange size) $ processEvents size rate input
 
-
-mainWait client name =
-    JACK.withActivation client $ Trans.lift $ do
-        putStrLn $ "started " ++ name ++ "..."
-        JACK.waitForBreak
-
+mainWait client name = JACK.withActivation client $ Trans.lift $ do
+  putStrLn $ "started " ++ name ++ "..."
+  JACK.waitForBreak
 
 main :: IO ()
 main = do
-    name <- getProgName
-    stateRef <- newIORef initialState
-    JACK.handleExceptions $
-        JACK.withClientDefault name $ \client ->
-        JACK.withPort client "input" $ \input ->
-        JACK.withPort client "output" $ \output ->
-        JACK.withProcess client (process client stateRef input output) $
-            mainWait client name
+  name <- getProgName
+  stateRef <- newIORef initialState
+  JACK.handleExceptions $
+    JACK.withClientDefault name $ \client ->
+    JACK.withPort client "input" $ \input ->
+    JACK.withPort client "output" $ \output ->
+    JACK.withProcess client (process client stateRef input output) $
+      mainWait client name
 
 checkVoiceMsg :: Msg.T -> Maybe VoiceMsg.T
-checkVoiceMsg ev =
-    case ev of
-       Msg.Channel (ChannelMsg.Cons _chan (ChannelMsg.Voice dat)) ->
-          Just dat
-       _ -> Nothing
+checkVoiceMsg ev = case ev of
+  Msg.Channel (ChannelMsg.Cons _chan (ChannelMsg.Voice dat))
+    -> Just dat
+  _ -> Nothing
 
 intFromNFrames :: Integral i => JACK.NFrames -> i
 intFromNFrames (JACK.NFrames n) = fromIntegral n
@@ -227,23 +207,21 @@ runStateOnIORef ref m = do
     writeIORef ref state
     return a
 
-process ::
-    JACK.Client ->
-    IORef (State Audio.Sample) ->
-    MIDI.Port JACK.Input ->
-    Audio.Port JACK.Output ->
-    JACK.NFrames ->
-    Sync.ExceptionalT E.Errno IO ()
+process :: JACK.Client ->
+           IORef (State Audio.Sample) ->
+           MIDI.Port JACK.Input ->
+           Audio.Port JACK.Output ->
+           JACK.NFrames ->
+           Sync.ExceptionalT E.Errno IO ()
 process client stateRef input output nframes = do
-    evs <- MIDI.readEventsFromPort input nframes
-    Trans.lift $ do
-        rate <- JACK.getSampleRate client
-        outArr <- Audio.getBufferPtr output nframes
-        block <-
-            runStateOnIORef stateRef $
-            run (intFromNFrames nframes) rate $
-            EventList.toPairList $
-            EventList.mapMaybe checkVoiceMsg $
-            EventList.mapTime intFromNFrames evs :: IO (SVB.Vector Audio.Sample)
-
-        SVB.withStartPtr block $ \src len -> copyArray outArr src len
+  evs <- MIDI.readEventsFromPort input nframes
+  Trans.lift $ do
+    rate <- JACK.getSampleRate client
+    outArr <- Audio.getBufferPtr output nframes
+    block <-
+      runStateOnIORef stateRef $
+      run (intFromNFrames nframes) rate $
+      EventList.toPairList $
+      EventList.mapMaybe checkVoiceMsg $
+      EventList.mapTime intFromNFrames evs :: IO (SVB.Vector Audio.Sample)
+    SVB.withStartPtr block $ \src len -> copyArray outArr src len

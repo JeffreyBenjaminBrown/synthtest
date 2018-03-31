@@ -260,7 +260,7 @@ pow
 pow a b = A.exp (A.log a A.* b)
 
 --Reads a window of size modu starting at pos from the table.  wraps the window as needed
--- change this to tak e start and end phase
+-- change this to take start and end phase
 readFromTable
     :: forall i l a.
        (KnownNat l, Numeric a)

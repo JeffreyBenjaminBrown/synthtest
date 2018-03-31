@@ -51,10 +51,10 @@ type Size = Int
 type SampleRate = Int
 
 check :: Monad m => Bool -> String -> m () -> m ()
-check b msg act = if not b
-                  then trace msg $ return ()
-                  else act
+check b msg act = if not b then trace msg $ return ()
+                           else act
 
+-- | overwrite all of `xs` into `v`, starting at `start` in `v`
 unsafeAddChunkToBuffer :: (Storable a, Num a) =>
    SVST.Vector s a -> Int -> SV.Vector a -> ST s ()
 unsafeAddChunkToBuffer v start xs =
@@ -70,24 +70,32 @@ unsafeAddChunkToBuffer v start xs =
                ("end too late: " ++ show (start, SV.length xs)) $
       go start 0
 
+-- | Here an "event" is a start time paired with a vector of sound.
+-- `size` is the length of the vector that arrange creates, which holds
+-- all the events.
 arrange :: (Storable a, Num a) => Size ->
                                   [(Int, SV.Vector a)] ->
                                   SV.Vector a
 arrange size evs = SVST.runSTVector $ do
+  -- TODO: does this sum them, or do they replace each other?
   v <- SVST.new (fromIntegral size) 0
   mapM_ (uncurry $ unsafeAddChunkToBuffer v) evs
   return v
 
-data OscillatorState a = OscillatorState a a Int
+data OscillatorState a = OscillatorState { osciAmp :: a
+                                         , osciFreq :: a
+                                         , osciPhase :: Int }
 type State a = Map.Map Pitch (OscillatorState a)
 
 initialState :: State a
 initialState = Map.empty
 
+-- | Despite the name, does no IO. Rather, one of its inputs is a list of
+-- already finished tones. It adds to it if appropriate.
 stopTone :: Int
-         -> (Maybe (Int, OscillatorState a),
-             [(Int, Int, OscillatorState a)])
-         -> [(Int, Int, OscillatorState a)]
+         -> ( Maybe (Int, OscillatorState a)
+            , [ (Int, Int, OscillatorState a ) ] )
+         -> [ ( Int, Int, OscillatorState a ) ]
 stopTone stopTime (mplaying, finished) =
    case mplaying of Just (startTime, osci) ->
                       (startTime, stopTime-startTime, osci) : finished
@@ -102,10 +110,12 @@ renderTone dur state@(OscillatorState amp freq phase) =
   then trace ("renderTone: negative duration " ++ show dur) $
        (SV.empty, state)
   else let gain = 0.9999
-       in (SV.zipWith (\y k -> y * sin (2*pi*fromIntegral k * freq))
+       in (SV.zipWith (\y k -> y * sin (2 * pi * fromIntegral k * freq))
             (SV.iterateN dur (gain*) amp)
             (SV.iterateN dur (1+) phase),
           OscillatorState (amp*gain^dur) freq (phase+dur))
+-- ^ TODO : `phase` here is a sequence of consecutive rising integers.
+-- Therefore `freq` must be in units other than Hz, right?
 
 processEvents :: (Storable a, Floating a, Monad m) =>
                  Size ->
@@ -114,7 +124,7 @@ processEvents :: (Storable a, Floating a, Monad m) =>
                  MS.StateT (State a) m [(Int, SV.Vector a)]
 processEvents size rate input = do
   oscis0 <- MS.get
-  let qq1 (mplaying, finished) =
+  let whatDoesThisDo (mplaying, finished) =
         let mplayingNew =
               fmap (\(start,s0) ->
                       case renderTone (fromIntegral size - start) s0
@@ -124,40 +134,27 @@ processEvents size rate input = do
            , maybe id (\p -> (fst p :)) mplayingNew $
              map (\(start, dur, s) -> (start, fst $ renderTone dur s))
                  finished)
-      qq2 oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
+      handleNoteErrors oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
         VoiceMsg.NoteOn pitch velocity ->
-          Map.insertWith
-             (\(newOsci, []) s ->
-                {-
-                A key may be pressed that was already pressed.
-                This should not happen, but we must be prepared for it.
-                Thus we call stopTone.
-                -}
-                (newOsci, stopTone time s))
+          Map.insertWith -- A pressed key is pressed again. Should'nt happen.
+             (\(newOsci, []) s -> (newOsci, stopTone time s))
              pitch
-             (Just (time,
-                 OscillatorState
-                    (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
-                    (VoiceMsg.frequencyFromPitch pitch /
-                     fromIntegral rate)
-                    0),
-              [])
+             ( Just ( time
+                    , OscillatorState
+                      (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
+                      (VoiceMsg.frequencyFromPitch pitch / fromIntegral rate)
+                      0 )
+             , [] )
              oscis
         VoiceMsg.NoteOff pitch _velocity ->
-          Map.adjust
-             (\s ->
-                {-
-                A key may be released that was not pressed.
-                This should not happen, but we must be prepared for it.
-                Thus stopTone also handles that case.
-                -}
-                (Nothing, stopTone time s))
+          Map.adjust -- An unpressed key is released. Shouldn't happen.
+             (\s -> (Nothing, stopTone time s))
              pitch
              oscis
         _ -> oscis
       pendingOscis =
-        fmap qq1 $
-        foldl qq2
+        fmap whatDoesThisDo $
+        foldl handleNoteErrors
            (fmap (\s -> (Just (0, s), [])) oscis0)
            (map (\(time,ev) -> (fromInteger time, ev)) input)
   MS.put (Map.mapMaybe fst pendingOscis)

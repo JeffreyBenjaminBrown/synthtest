@@ -93,7 +93,6 @@ instance Arrow SF where
             (z, g') = runSF g (snd x)
         in ((y, z), SF (h f' g'))
 
-
 instance ArrowLoop SF where
   loop sf = SF (g sf)
     where
@@ -142,7 +141,6 @@ data Table a =
 instance (A.Elt a) => Show (Table a) where
   show (Table sz a n) = "Table with " ++ show sz ++ " entries: " ++ show a
 
-
 funToTable ::
      (A.Num a, A.Ord a, A.Fractional a, A.FromIntegral Int a)
   => (A.Exp a -> A.Exp a)
@@ -160,9 +158,6 @@ funToTable f normalize size =
       maxabs =
         A.the Prelude.. A.maximum Prelude.. A.map A.abs -- :: A.Acc (A.Array A.DIM1 a) -> A.Exp a
   in Table size zs normalize
-
-
-
 
 data Backend
   = LLVM
@@ -235,7 +230,6 @@ class Interpreter i where
     => Signal c () (AccSample i l a)
     -> AIO.Vectors (AS.EltRepr a)
 
-
 instance Interpreter CUDA where
   runToStorable sig n = AIO.toVectors $ AI.run1 (runSignal sig) n
   evalToStorable sig = AIO.toVectors $ AI.run (runSignal sig ()) 
@@ -259,8 +253,6 @@ clip val lower upper
   | val <= lower = lower
   | val >= upper = upper
   | otherwise = val
-
-
 
 pow
     :: Floating (A.Exp a)
@@ -293,7 +285,6 @@ readFromTableA = arr Prelude.. readFromTable
 
 outA :: (Arrow a) => a b b
 outA = arr Prelude.id
-
 
 countDown :: ArrowCircuit a => Int -> a () Int
 countDown x = proc _ -> do

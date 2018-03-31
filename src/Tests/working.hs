@@ -5,8 +5,6 @@ import           Data.List                           (intersperse)
 import           System.Exit                         (exitFailure)
 import           System.IO                           (hPutStrLn, stderr)
 
-
-
 import qualified Sound.MIDI.Message                  as Msg
 import qualified Sound.MIDI.Message.Channel          as ChannelMsg
 import qualified Sound.MIDI.Message.Channel.Voice    as VoiceMsg
@@ -51,7 +49,6 @@ import           Debug.Trace                         (trace)
 type Time = Integer
 type Size = Int
 type SampleRate = Int
-
 
 check :: Monad m => Bool -> String -> m () -> m ()
 check b msg act = if not b
@@ -116,58 +113,55 @@ processEvents :: (Storable a, Floating a, Monad m) =>
                  [(Time, VoiceMsg.T)] ->
                  MS.StateT (State a) m [(Int, SV.Vector a)]
 processEvents size rate input = do
-   oscis0 <- MS.get
-   let pendingOscis =
-          fmap
-             (\(mplaying, finished) ->
-                let mplayingNew =
-                       fmap
-                          (\(start,s0) ->
-                             case renderTone (fromIntegral size - start) s0 of
-                                (chunk, s1) -> ((start,chunk), s1))
-                          mplaying
-                in  (fmap snd mplayingNew,
-                     maybe id (\p -> (fst p :)) mplayingNew $
-                     map
-                        (\(start, dur, s) -> (start, fst $ renderTone dur s))
-                        finished)) $
-          foldl
-             (\oscis (time,ev) ->
-                case VoiceMsg.explicitNoteOff ev of
-                   VoiceMsg.NoteOn pitch velocity ->
-                      Map.insertWith
-                         (\(newOsci, []) s ->
-                            {-
-                            A key may be pressed that was already pressed.
-                            This should not happen, but we must be prepared for it.
-                            Thus we call stopTone.
-                            -}
-                            (newOsci, stopTone time s))
-                         pitch
-                         (Just (time,
-                             OscillatorState
-                                (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
-                                (VoiceMsg.frequencyFromPitch pitch /
-                                 fromIntegral rate)
-                                0),
-                          [])
-                         oscis
-                   VoiceMsg.NoteOff pitch _velocity ->
-                      Map.adjust
-                         (\s ->
-                            {-
-                            A key may be released that was not pressed.
-                            This should not happen, but we must be prepared for it.
-                            Thus stopTone also handles that case.
-                            -}
-                            (Nothing, stopTone time s))
-                         pitch
-                         oscis
-                   _ -> oscis)
-             (fmap (\s -> (Just (0, s), [])) oscis0)
-             (map (\(time,ev) -> (fromInteger time, ev)) input)
-   MS.put (Map.mapMaybe fst pendingOscis)
-   return (concatMap snd $ Map.elems pendingOscis)
+  oscis0 <- MS.get
+  let qq1 (mplaying, finished) =
+        let mplayingNew =
+              fmap (\(start,s0) ->
+                      case renderTone (fromIntegral size - start) s0
+                      of (chunk, s1) -> ((start,chunk), s1))
+              mplaying
+        in ( fmap snd mplayingNew
+           , maybe id (\p -> (fst p :)) mplayingNew $
+             map (\(start, dur, s) -> (start, fst $ renderTone dur s))
+                 finished)
+      qq2 oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
+        VoiceMsg.NoteOn pitch velocity ->
+          Map.insertWith
+             (\(newOsci, []) s ->
+                {-
+                A key may be pressed that was already pressed.
+                This should not happen, but we must be prepared for it.
+                Thus we call stopTone.
+                -}
+                (newOsci, stopTone time s))
+             pitch
+             (Just (time,
+                 OscillatorState
+                    (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
+                    (VoiceMsg.frequencyFromPitch pitch /
+                     fromIntegral rate)
+                    0),
+              [])
+             oscis
+        VoiceMsg.NoteOff pitch _velocity ->
+          Map.adjust
+             (\s ->
+                {-
+                A key may be released that was not pressed.
+                This should not happen, but we must be prepared for it.
+                Thus stopTone also handles that case.
+                -}
+                (Nothing, stopTone time s))
+             pitch
+             oscis
+        _ -> oscis
+      pendingOscis =
+        fmap qq1 $
+        foldl qq2
+           (fmap (\s -> (Just (0, s), [])) oscis0)
+           (map (\(time,ev) -> (fromInteger time, ev)) input)
+  MS.put (Map.mapMaybe fst pendingOscis)
+  return (concatMap snd $ Map.elems pendingOscis)
 
 run :: (Storable a, Floating a, Monad m) =>
        Size ->

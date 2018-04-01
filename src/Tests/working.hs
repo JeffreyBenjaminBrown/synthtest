@@ -49,6 +49,7 @@ import           Debug.Trace                         (trace)
 
 type LTime = Integer -- Long Time
 type Time = Int      -- Short Time
+type Dur = Int
 type Size = Int
 type SampleRate = Int
 
@@ -103,9 +104,10 @@ stopTone stopTime (mplaying, finished) =
                     Nothing -> finished
 
 renderTone :: (Storable a, Floating a)
-           => Time
+           => Dur
            -> OscillatorState a
-           -> (SV.Vector a, OscillatorState a)
+           -> ( SV.Vector a
+              , OscillatorState a) -- ^ osc state once rendered tone ends
 renderTone dur state@(OscillatorState amp freq phase) =
   if dur<0
   then trace ("renderTone: negative duration " ++ show dur) $
@@ -122,8 +124,8 @@ renderTone dur state@(OscillatorState amp freq phase) =
 whatDoesThisDo :: forall a. (Storable a, Floating a)
                => Size -- ^ fromIntegral JACK.NFrames
                -> (Maybe (Time, OscillatorState a),
-                   [(Int, Int, OscillatorState a)])
-               -> (Maybe (OscillatorState a), [(Int, SV.Vector a)])
+                   [(Time, Dur, OscillatorState a)])
+               -> (Maybe (OscillatorState a), [(Time, SV.Vector a)])
 whatDoesThisDo size (mplaying, finished) =
   let mplayingNew :: Maybe ((Time, SV.Vector a), OscillatorState a)
       mplayingNew =

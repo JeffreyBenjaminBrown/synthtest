@@ -115,7 +115,50 @@ renderTone dur state@(OscillatorState amp freq phase) =
             (SV.iterateN dur (1+) phase),
           OscillatorState (amp*gain^dur) freq (phase+dur))
 -- ^ TODO : `phase` here is a sequence of consecutive rising integers.
--- Therefore `freq` must be in units other than Hz, right?
+-- It is the only running variable in the sinewave calculation.
+-- Therefore `freq` must be in units other than Hz.
+
+whatDoesThisDo :: (Storable a, Floating a, Integral p)
+               => p
+               -> (Maybe (Int, OscillatorState a),
+                   [(Int, Int, OscillatorState a)])
+               -> (Maybe (OscillatorState a), [(Int, SV.Vector a)])
+whatDoesThisDo size (mplaying, finished) =
+  let mplayingNew =
+        fmap (\(start,s0) ->
+                case renderTone (fromIntegral size - start) s0
+                of (chunk, s1) -> ((start,chunk), s1))
+        mplaying
+  in ( fmap snd mplayingNew
+     , maybe id (\p -> (fst p :)) mplayingNew $
+       map (\(start, dur, s) -> (start, fst $ renderTone dur s))
+           finished)
+
+handleNoteErrors :: (Integral a2, Floating a1)
+  => a2
+  -> Map.Map Pitch
+       (Maybe (Int, OscillatorState a1), [(Int, Int, OscillatorState a1)])
+  -> (Int, VoiceMsg.T)
+  -> Map.Map Pitch
+       (Maybe (Int, OscillatorState a1), [(Int, Int, OscillatorState a1)])
+handleNoteErrors rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
+  VoiceMsg.NoteOn pitch velocity ->
+    Map.insertWith -- A pressed key is pressed again. Should'nt happen.
+       (\(newOsci, []) s -> (newOsci, stopTone time s))
+       pitch
+       ( Just ( time
+              , OscillatorState
+                (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
+                (VoiceMsg.frequencyFromPitch pitch / fromIntegral rate)
+                0 )
+       , [] )
+       oscis
+  VoiceMsg.NoteOff pitch _velocity ->
+    Map.adjust -- An unpressed key is released. Shouldn't happen.
+       (\s -> (Nothing, stopTone time s))
+       pitch
+       oscis
+  _ -> oscis
 
 processEvents :: (Storable a, Floating a, Monad m) =>
                  Size ->
@@ -124,41 +167,13 @@ processEvents :: (Storable a, Floating a, Monad m) =>
                  MS.StateT (State a) m [(Int, SV.Vector a)]
 processEvents size rate input = do
   oscis0 <- MS.get
-  let whatDoesThisDo (mplaying, finished) =
-        let mplayingNew =
-              fmap (\(start,s0) ->
-                      case renderTone (fromIntegral size - start) s0
-                      of (chunk, s1) -> ((start,chunk), s1))
-              mplaying
-        in ( fmap snd mplayingNew
-           , maybe id (\p -> (fst p :)) mplayingNew $
-             map (\(start, dur, s) -> (start, fst $ renderTone dur s))
-                 finished)
-      handleNoteErrors oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
-        VoiceMsg.NoteOn pitch velocity ->
-          Map.insertWith -- A pressed key is pressed again. Should'nt happen.
-             (\(newOsci, []) s -> (newOsci, stopTone time s))
-             pitch
-             ( Just ( time
-                    , OscillatorState
-                      (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
-                      (VoiceMsg.frequencyFromPitch pitch / fromIntegral rate)
-                      0 )
-             , [] )
-             oscis
-        VoiceMsg.NoteOff pitch _velocity ->
-          Map.adjust -- An unpressed key is released. Shouldn't happen.
-             (\s -> (Nothing, stopTone time s))
-             pitch
-             oscis
-        _ -> oscis
-      pendingOscis =
-        fmap whatDoesThisDo $
-        foldl handleNoteErrors
-           (fmap (\s -> (Just (0, s), [])) oscis0)
-           (map (\(time,ev) -> (fromInteger time, ev)) input)
-  MS.put (Map.mapMaybe fst pendingOscis)
-  return (concatMap snd $ Map.elems pendingOscis)
+  let pendingOscis =
+        fmap (whatDoesThisDo size) $
+        foldl (handleNoteErrors rate)
+          (fmap (\s -> (Just (0, s), [])) oscis0)
+          (map (\(time,ev) -> (fromInteger time, ev)) input)
+  MS.put $ Map.mapMaybe fst pendingOscis
+  return $ concatMap snd $ Map.elems pendingOscis
 
 run :: (Storable a, Floating a, Monad m) =>
        Size ->

@@ -1,48 +1,47 @@
-
 module Main where
 import           Control.Monad                       (unless, when)
 import           Data.List                           (intersperse)
 import           System.Exit                         (exitFailure)
 import           System.IO                           (hPutStrLn, stderr)
-
+--
 import qualified Sound.MIDI.Message                  as Msg
 import qualified Sound.MIDI.Message.Channel          as ChannelMsg
 import qualified Sound.MIDI.Message.Channel.Voice    as VoiceMsg
-
+--
 import qualified Sound.JACK                          as JACK
 import qualified Sound.JACK.Audio                    as Audio
 import qualified Sound.JACK.MIDI                     as MIDI
-
+--
 import qualified Data.EventList.Absolute.TimeBody    as EventList
-
+--
 import qualified Control.Monad.Exception.Synchronous as Sync
 import qualified Control.Monad.Trans.Class           as Trans
 import qualified Control.Monad.Trans.State.Strict    as MS
 import qualified Foreign.C.Error                     as E
 import           Foreign.Marshal.Array               (copyArray)
-
+--
 import           System.Environment                  (getProgName)
-
+--
 import qualified Data.StorableVector.Base            as SVB
-
+--
 import           Data.IORef                          (IORef, newIORef,
                                                       readIORef, writeIORef)
-
+--
 import           Sound.MIDI.Message.Channel.Voice    (Pitch)
 import qualified Sound.MIDI.Message.Channel.Voice    as VoiceMsg
-
+--
 import qualified Data.StorableVector                 as SV
 import qualified Data.StorableVector.ST.Strict       as SVST
-
+--
 import           Control.Monad.ST.Strict             as ST
 import           Foreign.Storable                    (Storable)
-
+--
 import qualified Control.Monad.Trans.State.Strict    as MS
-
+--
 import qualified Data.Map                            as Map
-
+--
 import           Control.Monad                       (liftM)
-
+--
 import           Debug.Trace                         (trace)
 
 
@@ -71,13 +70,12 @@ unsafeAddChunkToBuffer v start xs =
       go start 0
 
 -- | Here an "event" is a start time paired with a vector of sound.
--- `size` is the length of the vector that arrange creates, which holds
+-- `size` is the length of the vector that `arrange` creates, which holds
 -- all the events.
-arrange :: (Storable a, Num a) => Size ->
+arrange :: (Storable a, Num a) => Size ->  -- ^ fromIntegral JACK.NFrames
                                   [(Int, SV.Vector a)] ->
                                   SV.Vector a
 arrange size evs = SVST.runSTVector $ do
-  -- TODO: does this sum them, or do they replace each other?
   v <- SVST.new (fromIntegral size) 0
   mapM_ (uncurry $ unsafeAddChunkToBuffer v) evs
   return v
@@ -91,7 +89,7 @@ initialState :: State a
 initialState = Map.empty
 
 -- | Despite the name, does no IO. Rather, one of its inputs is a list of
--- already finished tones. It adds to it if appropriate.
+-- already finished tones. It adds to that list, if appropriate.
 stopTone :: Int
          -> ( Maybe (Int, OscillatorState a)
             , [ (Int, Int, OscillatorState a ) ] )
@@ -114,12 +112,12 @@ renderTone dur state@(OscillatorState amp freq phase) =
             (SV.iterateN dur (gain*) amp)
             (SV.iterateN dur (1+) phase),
           OscillatorState (amp*gain^dur) freq (phase+dur))
--- ^ TODO : `phase` here is a sequence of consecutive rising integers.
+-- | `phase` here is a sequence of consecutive rising integers.
 -- It is the only running variable in the sinewave calculation.
 -- Therefore `freq` must be in units other than Hz.
 
-whatDoesThisDo :: (Storable a, Floating a, Integral p)
-               => p
+whatDoesThisDo :: (Storable a, Floating a)
+               => Size -- ^ fromIntegral JACK.NFrames
                -> (Maybe (Int, OscillatorState a),
                    [(Int, Int, OscillatorState a)])
                -> (Maybe (OscillatorState a), [(Int, SV.Vector a)])
@@ -128,11 +126,11 @@ whatDoesThisDo size (mplaying, finished) =
         fmap (\(start,s0) ->
                 case renderTone (fromIntegral size - start) s0
                 of (chunk, s1) -> ((start,chunk), s1))
-        mplaying
+             mplaying
   in ( fmap snd mplayingNew
-     , maybe id (\p -> (fst p :)) mplayingNew $
-       map (\(start, dur, s) -> (start, fst $ renderTone dur s))
-           finished)
+     , maybe id (\p -> (fst p :)) mplayingNew
+       $ map (\(start, dur, s) -> (start, fst $ renderTone dur s))
+             finished)
 
 handleNoteErrors :: (Integral a2, Floating a1)
   => a2
@@ -161,7 +159,7 @@ handleNoteErrors rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
   _ -> oscis
 
 processEvents :: (Storable a, Floating a, Monad m) =>
-                 Size ->
+                 Size -> -- ^ fromIntegral JACK.NFrames
                  SampleRate ->
                  [(Time, VoiceMsg.T)] ->
                  MS.StateT (State a) m [(Int, SV.Vector a)]
@@ -176,7 +174,7 @@ processEvents size rate input = do
   return $ concatMap snd $ Map.elems pendingOscis
 
 run :: (Storable a, Floating a, Monad m) =>
-       Size ->
+       Size -> -- ^ fromIntegral JACK.NFrames
        SampleRate ->
        [(Time, VoiceMsg.T)] ->
        MS.StateT (State a) m (SV.Vector a)

@@ -47,7 +47,8 @@ import           Control.Monad                       (liftM)
 import           Debug.Trace                         (trace)
 
 
-type Time = Integer
+type LTime = Integer -- Long Time
+type Time = Int      -- Short Time
 type Size = Int
 type SampleRate = Int
 
@@ -57,7 +58,7 @@ check b msg act = if not b then trace msg $ return ()
 
 -- | overwrite all of `xs` into `v`, starting at `start` in `v`
 unsafeAddChunkToBuffer :: (Storable a, Num a) =>
-   SVST.Vector s a -> Int -> SV.Vector a -> ST s ()
+   SVST.Vector s a -> Time -> SV.Vector a -> ST s ()
 unsafeAddChunkToBuffer v start xs =
    let go i j = if j >= SV.length xs
                 then return ()
@@ -75,7 +76,7 @@ unsafeAddChunkToBuffer v start xs =
 -- `size` is the length of the vector that `arrange` creates, which holds
 -- all the events.
 arrange :: (Storable a, Num a) => Size ->  -- ^ fromIntegral JACK.NFrames
-                                  [(Int, SV.Vector a)] ->
+                                  [(Time, SV.Vector a)] ->
                                   SV.Vector a
 arrange size evs = SVST.runSTVector $ do
   v <- SVST.new (fromIntegral size) 0
@@ -92,17 +93,17 @@ initialState = Map.empty
 
 -- | Despite the name, does no IO. Rather, one of its inputs is a list of
 -- already finished tones. It adds to that list, if appropriate.
-stopTone :: Int
-         -> ( Maybe (Int, OscillatorState a)
-            , [ (Int, Int, OscillatorState a ) ] )
-         -> [ ( Int, Int, OscillatorState a ) ]
+stopTone :: Time
+         -> ( Maybe (Time, OscillatorState a)
+            , [ (Time, Time, OscillatorState a ) ] )
+         -> [ ( Time, Time, OscillatorState a ) ]
 stopTone stopTime (mplaying, finished) =
    case mplaying of Just (startTime, osci) ->
                       (startTime, stopTime-startTime, osci) : finished
                     Nothing -> finished
 
 renderTone :: (Storable a, Floating a)
-           => Int
+           => Time
            -> OscillatorState a
            -> (SV.Vector a, OscillatorState a)
 renderTone dur state@(OscillatorState amp freq phase) =
@@ -120,11 +121,11 @@ renderTone dur state@(OscillatorState amp freq phase) =
 
 whatDoesThisDo :: forall a. (Storable a, Floating a)
                => Size -- ^ fromIntegral JACK.NFrames
-               -> (Maybe (Int, OscillatorState a),
+               -> (Maybe (Time, OscillatorState a),
                    [(Int, Int, OscillatorState a)])
                -> (Maybe (OscillatorState a), [(Int, SV.Vector a)])
 whatDoesThisDo size (mplaying, finished) =
-  let mplayingNew :: Maybe ((Int, SV.Vector a), OscillatorState a)
+  let mplayingNew :: Maybe ((Time, SV.Vector a), OscillatorState a)
       mplayingNew =
         fmap (\(start,s0) ->
                 case renderTone (fromIntegral size - start) s0
@@ -164,7 +165,7 @@ handleNoteErrors rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
 processEvents :: (Storable a, Floating a, Monad m) =>
                  Size -> -- ^ fromIntegral JACK.NFrames
                  SampleRate ->
-                 [(Time, VoiceMsg.T)] ->
+                 [(LTime, VoiceMsg.T)] ->
                  MS.StateT (State a) m [(Int, SV.Vector a)]
 processEvents size rate input = do
   oscis0 <- MS.get
@@ -179,7 +180,7 @@ processEvents size rate input = do
 run :: (Storable a, Floating a, Monad m) =>
        Size -> -- ^ fromIntegral JACK.NFrames
        SampleRate ->
-       [(Time, VoiceMsg.T)] ->
+       [(LTime, VoiceMsg.T)] ->
        MS.StateT (State a) m (SV.Vector a)
 run size rate input = 
    liftM (arrange size) $ processEvents size rate input

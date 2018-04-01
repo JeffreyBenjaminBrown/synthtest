@@ -1,3 +1,5 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main where
 import           Control.Monad                       (unless, when)
 import           Data.List                           (intersperse)
@@ -116,13 +118,14 @@ renderTone dur state@(OscillatorState amp freq phase) =
 -- It is the only running variable in the sinewave calculation.
 -- Therefore `freq` must be in units other than Hz.
 
-whatDoesThisDo :: (Storable a, Floating a)
+whatDoesThisDo :: forall a. (Storable a, Floating a)
                => Size -- ^ fromIntegral JACK.NFrames
                -> (Maybe (Int, OscillatorState a),
                    [(Int, Int, OscillatorState a)])
                -> (Maybe (OscillatorState a), [(Int, SV.Vector a)])
 whatDoesThisDo size (mplaying, finished) =
-  let mplayingNew =
+  let mplayingNew :: Maybe ((Int, SV.Vector a), OscillatorState a)
+      mplayingNew =
         fmap (\(start,s0) ->
                 case renderTone (fromIntegral size - start) s0
                 of (chunk, s1) -> ((start,chunk), s1))

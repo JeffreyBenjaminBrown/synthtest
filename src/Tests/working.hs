@@ -50,7 +50,7 @@ import           Debug.Trace                         (trace)
 type LTime = Integer -- Long Time
 type Time = Int      -- Short Time
 type Dur = Int
-type Size = Int
+type BufferSize = Int
 type SampleRate = Int
 
 check :: Monad m => Bool -> String -> m () -> m ()
@@ -76,11 +76,11 @@ unsafeAddChunkToBuffer v start xs =
 -- | Here an "event" is a start time paired with a vector of sound.
 -- `size` is the length of the vector that `arrange` creates, which holds
 -- all the events.
-arrange :: (Storable a, Num a) => Size ->  -- ^ fromIntegral JACK.NFrames
+arrange :: (Storable a, Num a) => BufferSize ->
                                   [(Time, SV.Vector a)] ->
                                   SV.Vector a
-arrange size evs = SVST.runSTVector $ do
-  v <- SVST.new (fromIntegral size) 0
+arrange bSize evs = SVST.runSTVector $ do
+  v <- SVST.new (fromIntegral bSize) 0
   mapM_ (uncurry $ unsafeAddChunkToBuffer v) evs
   return v
 
@@ -117,21 +117,23 @@ renderTone dur state@(OscillatorState amp freq phase) =
        in (SV.zipWith (\y k -> y * sin (2 * pi * fromIntegral k * freq))
             (SV.iterateN dur (gain*) amp)
             (SV.iterateN dur (1+) phase),
-          OscillatorState (amp*gain^dur) freq (phase+dur))
+          OscillatorState { osciAmp = amp*gain^dur
+                          , osciFreq = freq
+                          , osciPhase = phase+dur } )
 -- | `phase` here is a sequence of consecutive rising integers.
 -- It is the only running variable in the sinewave calculation.
 -- Therefore `freq` must be in units other than Hz.
 
 whatDoesThisDo :: forall a. (Storable a, Floating a)
-               => Size -- ^ fromIntegral JACK.NFrames
+               => BufferSize
                -> (Maybe (Time, OscillatorState a),
                    [(Time, Dur, OscillatorState a)])
                -> (Maybe (OscillatorState a), [(Time, SV.Vector a)])
-whatDoesThisDo size (mplaying, finished) =
+whatDoesThisDo bSize (mplaying, finished) =
   let mplayingNew :: Maybe ((Time, SV.Vector a), OscillatorState a)
       mplayingNew =
         fmap (\(start,s0) ->
-                case renderTone (fromIntegral size - start) s0
+                case renderTone (fromIntegral bSize - start) s0
                 of (chunk, s1) -> ((start,chunk), s1))
              mplaying
   in ( fmap snd mplayingNew
@@ -143,7 +145,7 @@ handleRedundantMidi :: (Floating a)
   => SampleRate
   -> Map.Map Pitch
        (Maybe (Int, OscillatorState a), [(Int, Int, OscillatorState a)])
-  -> (Int, VoiceMsg.T)
+  -> (Time, VoiceMsg.T)
   -> Map.Map Pitch
        (Maybe (Int, OscillatorState a), [(Int, Int, OscillatorState a)])
 handleRedundantMidi rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
@@ -152,10 +154,11 @@ handleRedundantMidi rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
        (\(newOsci, []) s -> (newOsci, stopTone time s))
        pitch
        ( Just ( time
-              , OscillatorState
-                (0.2 * 2 ** VoiceMsg.realFromVelocity velocity)
-                (VoiceMsg.frequencyFromPitch pitch / fromIntegral rate)
-                0 )
+              , OscillatorState {
+                  osciAmp = 0.2 * 2 ** VoiceMsg.realFromVelocity velocity
+                , osciFreq = VoiceMsg.frequencyFromPitch pitch
+                             / fromIntegral rate
+                , osciPhase = 0 } )
        , [] )
        oscis
   VoiceMsg.NoteOff pitch _velocity ->
@@ -166,14 +169,14 @@ handleRedundantMidi rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
   _ -> oscis
 
 processEvents :: (Storable a, Floating a, Monad m) =>
-                 Size -> -- ^ fromIntegral JACK.NFrames
+                 BufferSize ->
                  SampleRate ->
                  [(LTime, VoiceMsg.T)] ->
                  MS.StateT (State a) m [(Int, SV.Vector a)]
-processEvents size rate input = do
+processEvents bSize rate input = do
   oscis0 <- MS.get
   let pendingOscis =
-        fmap (whatDoesThisDo size) $
+        fmap (whatDoesThisDo bSize) $
         foldl (handleRedundantMidi rate)
           (fmap (\s -> (Just (0, s), [])) oscis0)
           (map (\(time,ev) -> (fromInteger time, ev)) input)
@@ -181,12 +184,12 @@ processEvents size rate input = do
   return $ concatMap snd $ Map.elems pendingOscis
 
 run :: (Storable a, Floating a, Monad m) =>
-       Size -> -- ^ fromIntegral JACK.NFrames
+       BufferSize ->
        SampleRate ->
        [(LTime, VoiceMsg.T)] ->
        MS.StateT (State a) m (SV.Vector a)
-run size rate input = 
-   liftM (arrange size) $ processEvents size rate input
+run bSize rate input = 
+   liftM (arrange bSize) $ processEvents bSize rate input
 
 mainWait client name = JACK.withActivation client $ Trans.lift $ do
   putStrLn $ "started " ++ name ++ "..."

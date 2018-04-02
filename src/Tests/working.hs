@@ -88,6 +88,7 @@ data OscillatorState a = OscillatorState { osciAmp :: a
                                          , osciFreq :: a
                                          , osciPhase :: Int }
 type State a = Map.Map Pitch (OscillatorState a)
+  -- TODO : Pitch is a (newtype-wrapped) integer. Generalize.
 
 initialState :: State a
 initialState = Map.empty
@@ -138,14 +139,14 @@ whatDoesThisDo size (mplaying, finished) =
        $ map (\(start, dur, s) -> (start, fst $ renderTone dur s))
              finished)
 
-handleNoteErrors :: (Integral a2, Floating a1)
-  => a2
+handleRedundantMidi :: (Floating a)
+  => SampleRate
   -> Map.Map Pitch
-       (Maybe (Int, OscillatorState a1), [(Int, Int, OscillatorState a1)])
+       (Maybe (Int, OscillatorState a), [(Int, Int, OscillatorState a)])
   -> (Int, VoiceMsg.T)
   -> Map.Map Pitch
-       (Maybe (Int, OscillatorState a1), [(Int, Int, OscillatorState a1)])
-handleNoteErrors rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
+       (Maybe (Int, OscillatorState a), [(Int, Int, OscillatorState a)])
+handleRedundantMidi rate oscis (time,ev) = case VoiceMsg.explicitNoteOff ev of
   VoiceMsg.NoteOn pitch velocity ->
     Map.insertWith -- A pressed key is pressed again. Should'nt happen.
        (\(newOsci, []) s -> (newOsci, stopTone time s))
@@ -173,7 +174,7 @@ processEvents size rate input = do
   oscis0 <- MS.get
   let pendingOscis =
         fmap (whatDoesThisDo size) $
-        foldl (handleNoteErrors rate)
+        foldl (handleRedundantMidi rate)
           (fmap (\s -> (Just (0, s), [])) oscis0)
           (map (\(time,ev) -> (fromInteger time, ev)) input)
   MS.put $ Map.mapMaybe fst pendingOscis
